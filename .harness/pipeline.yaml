@@ -1,0 +1,158 @@
+pipeline:
+  name: scs-tidbits-multi-artifact-governance
+  identifier: scstidbitsmultiartifactgovernance
+  projectIdentifier: nidatidbitsproject
+  orgIdentifier: default
+  tags: {}
+  properties:
+    ci:
+      codebase:
+        connectorRef: nidagithubconnector
+        build: <+input>
+        sparseCheckout: []
+  stages:
+    - stage:
+        name: Build and Generate SBOM
+        identifier: Build_and_Generate_SBOM
+        type: CI
+        spec:
+          cloneCodebase: true
+          execution:
+            steps:
+              - step:
+                  type: Run
+                  name: Maven Build and Generate SBOM
+                  identifier: Maven_Build_and_Generate_SBOM
+                  spec:
+                    connectorRef: nidadockerconnector
+                    image: maven:3.9-eclipse-temurin-17
+                    shell: Sh
+                    command: |-
+                      echo "--- Building Maven JAR and generating CycloneDX SBOM ---"
+                      mvn package --no-transfer-progress
+                      echo "--- SBOM generated ---"
+                      ls -la /harness/target/bom.json
+              - step:
+                  type: BuildAndPushDockerRegistry
+                  name: Build and Push Docker Image
+                  identifier: Build_and_Push_Docker_Image
+                  spec:
+                    connectorRef: nidadockerconnector
+                    repo: nidayra/scs-ecommerce-app
+                    tags:
+                      - <+pipeline.sequenceId>
+                    caching: false
+                    dockerfile: Dockerfile
+                    context: .
+              - step:
+                  type: SscaOrchestration
+                  name: Generate SBOM - Docker Image
+                  identifier: Generate_SBOM_Docker_Image
+                  spec:
+                    mode: generation
+                    tool:
+                      type: cdxgen
+                      spec:
+                        format: cyclonedx-json
+                    source:
+                      type: docker
+                      spec:
+                        connector: nidadockerconnector
+                        image: nidayra/scs-ecommerce-app:<+pipeline.sequenceId>
+                    sbom_drift:
+                      base: last_generated_sbom
+                    resources:
+                      limits:
+                        memory: 500Mi
+                        cpu: "0.5"
+              - step:
+                  type: SscaOrchestration
+                  name: Ingest SBOM - Maven JAR
+                  identifier: Ingest_SBOM_Maven_JAR
+                  spec:
+                    mode: ingestion
+                    ingestion:
+                      file: /harness/target/bom.json
+                    source:
+                      type: docker
+                      spec:
+                        connector: nidadockerconnector
+                        image: nidayra/scs-ecommerce-app:<+pipeline.sequenceId>
+                    sbom_drift:
+                      base: last_generated_sbom
+                    resources:
+                      limits:
+                        memory: 500Mi
+                        cpu: "0.5"
+          platform:
+            os: Linux
+            arch: Amd64
+          runtime:
+            type: Cloud
+            spec: {}
+    - stage:
+        name: Enforce SBOM Policies
+        identifier: Enforce_SBOM_Policies
+        type: CI
+        spec:
+          cloneCodebase: false
+          caching:
+            enabled: false
+            override: false
+            paths: []
+          buildIntelligence:
+            enabled: false
+          platform:
+            os: Linux
+            arch: Amd64
+          runtime:
+            type: Cloud
+            spec: {}
+          execution:
+            steps:
+              - step:
+                  type: SscaEnforcement
+                  name: Enforce Policy - Docker Image
+                  identifier: Enforce_Policy_Docker_Image
+                  spec:
+                    source:
+                      type: docker
+                      spec:
+                        connector: nidadockerconnector
+                        image: nidayra/scs-ecommerce-app:<+pipeline.sequenceId>
+                    policy:
+                      policySets:
+                        - multiartifactpolicyset
+                    resources:
+                      limits:
+                        memory: 500Mi
+                        cpu: "0.5"
+                  failureStrategies:
+                    - onFailure:
+                        errors:
+                          - AllErrors
+                        action:
+                          type: Ignore
+              - step:
+                  type: SscaEnforcement
+                  name: Enforce Policy - Maven JAR
+                  identifier: Enforce_Policy_Maven_JAR
+                  spec:
+                    source:
+                      type: docker
+                      spec:
+                        connector: nidadockerconnector
+                        image: nidayra/scs-ecommerce-app:<+pipeline.sequenceId>
+                    policy:
+                      policySets:
+                        - multiartifactpolicyset
+                    resources:
+                      limits:
+                        memory: 500Mi
+                        cpu: "0.5"
+                  failureStrategies:
+                    - onFailure:
+                        errors:
+                          - AllErrors
+                        action:
+                          type: Ignore
